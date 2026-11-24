@@ -68,7 +68,19 @@ jobs:
             elif [ -n "$APPLE_ID" ]; then
               EXTRA="$EXTRA -c.mac.notarize=true"
             fi
-            npx electron-builder --mac --arm64 --x64 --publish never $EXTRA
+            # Só o .zip pelo electron-builder (é o que a atualização automática usa). O .dmg dele
+            # (dmgbuild) quebra nas máquinas Mac novas: 'I' format requires 0 <= number <= 4294967295.
+            npx electron-builder --mac zip --arm64 --x64 --publish never $EXTRA
+            # .dmg com a ferramenta do próprio macOS: o app e um atalho para Aplicativos.
+            VERSAO_APP=$(node -p "require('./package.json').version")
+            for par in "mac-arm64:arm64" "mac:x64"; do
+              PASTA="dist/${par%%:*}"; ARQ="${par##*:}"
+              [ -d "$PASTA" ] || continue
+              PALCO="$RUNNER_TEMP/dmg-$ARQ"; rm -rf "$PALCO"; mkdir -p "$PALCO"
+              cp -R "$PASTA"/*.app "$PALCO/"
+              ln -s /Applications "$PALCO/Aplicativos"
+              hdiutil create -volname "Núcleo Terminal" -srcfolder "$PALCO" -ov -fs HFS+ -format UDZO "dist/Nucleo-Terminal-$VERSAO_APP-$ARQ.dmg"
+            done
           ) > "$LOG" 2>&1
           STATUS=$?
           if [ $STATUS -ne 0 ]; then
