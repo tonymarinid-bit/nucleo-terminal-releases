@@ -1,0 +1,98 @@
+# Gera o Núcleo Terminal para Mac (Apple Silicon e Intel).
+# Roda aqui porque máquina Mac é grátis em repositório público. O código fica no repositório
+# privado: é baixado só durante o build, com uma chave somente leitura (segredo
+# CODIGO_DEPLOY_KEY), e nada dele é publicado. O registro do build não mostra código.
+# Quem dispara é o `npm run publicar` do dono, que depois baixa os arquivos e publica a release.
+name: mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit do código (SHA completo)
+        required: true
+
+# O build não precisa de nenhuma permissão neste repositório.
+permissions: {}
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - name: Conferir o pedido
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if ! [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then echo "ref precisa ser um SHA completo"; exit 1; fi
+
+      - name: Baixar o código (privado, chave somente leitura)
+        uses: actions/checkout@v4
+        with:
+          repository: tonymarinid-bit/nucleo-terminal
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODIGO_DEPLOY_KEY }}
+          persist-credentials: false
+          path: codigo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Construir e empacotar
+        working-directory: codigo
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Toda a saída vai para um arquivo que não é publicado (o registro deste build é público).
+          LOG="$RUNNER_TEMP/build.log"
+          set +e
+          (
+            set -e
+            npm ci
+            # node-pty vem pronto por processador; a máquina é Apple Silicon, o Intel entra à força.
+            VERSAO=$(node -p "require('./package-lock.json').packages['node_modules/@lydell/node-pty-darwin-x64'].version")
+            npm install --no-save --force "@lydell/node-pty-darwin-x64@$VERSAO"
+            npx electron-vite build
+            EXTRA="-c.npmRebuild=false"
+            if [ -z "$CSC_LINK" ]; then
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+              EXTRA="$EXTRA -c.mac.identity=null -c.afterPack=scripts/assinar-adhoc.cjs"
+            elif [ -n "$APPLE_ID" ]; then
+              EXTRA="$EXTRA -c.mac.notarize=true"
+            fi
+            npx electron-builder --mac --arm64 --x64 --publish never $EXTRA
+          ) > "$LOG" 2>&1
+          STATUS=$?
+          if [ $STATUS -ne 0 ]; then
+            echo "O build falhou. Só as linhas de erro (sem trechos de código):"
+            grep -E "⨯|ERR!|Error:|error:|failed" "$LOG" | grep -vE '^\s*>?\s*[0-9]+\s*\|' | cut -c1-200 | head -25
+            exit $STATUS
+          fi
+          echo "Build ok."
+          ls -1 dist | grep -E '\.(dmg|zip|yml|blockmap)$'
+
+      - name: Conferir o terminal e a assinatura
+        working-directory: codigo
+        run: |
+          for app in dist/mac*/*.app; do
+            echo "$(basename "$(dirname "$app")"):"
+            find "$app" -path '*node-pty-darwin*' -name '*.node' | sed -E 's#.*/(node-pty-darwin-[^/]+)/.*#  terminal: \1#' | sort -u
+            codesign -dv "$app" 2>&1 | grep -E "^Signature|^Authority" | sed 's/^/  /'
+          done
+
+      - name: Guardar os arquivos para o publicar baixar
+        uses: actions/upload-artifact@v4
+        with:
+          name: nucleo-terminal-mac
+          path: |
+            codigo/dist/*.dmg
+            codigo/dist/*.zip
+            codigo/dist/*.blockmap
+            codigo/dist/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 3
