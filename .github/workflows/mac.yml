@@ -17,7 +17,9 @@ permissions: {}
 
 jobs:
   mac:
-    runs-on: macos-latest
+    # Máquina Mac Intel: a fila das Apple Silicon do GitHub chegou a não atender (24/11/2026).
+    # O app sai para os dois processadores do mesmo jeito.
+    runs-on: macos-15-intel
     timeout-minutes: 40
     steps:
       - name: Conferir o pedido
@@ -54,9 +56,10 @@ jobs:
           (
             set -e
             npm ci
-            # node-pty vem pronto por processador; a máquina é Apple Silicon, o Intel entra à força.
-            VERSAO=$(node -p "require('./package-lock.json').packages['node_modules/@lydell/node-pty-darwin-x64'].version")
-            npm install --no-save --force "@lydell/node-pty-darwin-x64@$VERSAO"
+            # node-pty vem pronto por processador: o da outra arquitetura entra à força.
+            OUTRA=$([ "$(uname -m)" = "arm64" ] && echo x64 || echo arm64)
+            VERSAO=$(node -p "require('./package-lock.json').packages['node_modules/@lydell/node-pty-darwin-$OUTRA'].version")
+            npm install --no-save --force "@lydell/node-pty-darwin-$OUTRA@$VERSAO"
             npx electron-vite build
             EXTRA="-c.npmRebuild=false"
             if [ -z "$CSC_LINK" ]; then
